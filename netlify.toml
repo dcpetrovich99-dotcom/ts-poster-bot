@@ -1,0 +1,10 @@
+[build]
+  command = "npm run build"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Щоденний крон: нагадування + контент-план. Netlify Scheduled Functions
+# б'ють у Next-роут /api/cron/daily (захищений CRON_SECRET).
+[functions."cron-daily"]
+  schedule = "0 8 * * *"

@@ -1,0 +1,52 @@
+{
+  "name": "tg-poster-saas",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "prisma generate && next build",
+    "start": "next start",
+    "lint": "eslint",
+    "postinstall": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio",
+    "db:seed": "tsx prisma/seed.ts",
+    "bot:set-webhook": "tsx scripts/set-webhook.ts",
+    "style:scrape": "tsx scripts/scrape-channel.ts",
+    "subs:export": "tsx scripts/export-subscribers.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.69.0",
+    "@neondatabase/serverless": "^1.0.2",
+    "@netlify/blobs": "^10.0.10",
+    "@node-rs/argon2": "^2.0.2",
+    "@prisma/adapter-neon": "^7.8.0",
+    "@prisma/client": "^7.8.0",
+    "exceljs": "^4.4.0",
+    "grammy": "^1.39.4",
+    "next": "15.5.18",
+    "openai": "^6.10.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "telegram": "^2.26.22",
+    "ws": "^8.18.3",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/ws": "^8.18.1",
+    "dotenv": "^17.2.3",
+    "eslint": "^9",
+    "eslint-config-next": "15.5.18",
+    "prisma": "^7.8.0",
+    "tailwindcss": "^4",
+    "tsx": "^4.22.1",
+    "typescript": "^5"
+  }
+}
