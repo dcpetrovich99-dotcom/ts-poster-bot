@@ -1,8 +1,16 @@
 import "server-only";
-import { InlineKeyboard, type Bot, type Context } from "grammy";
+import { InlineKeyboard, InputFile, type Bot, type Context } from "grammy";
 import { prisma } from "../db";
 import { env } from "../env";
-import { getOrCreateTenantByTgId, getDefaultChannel } from "../tenant";
+import { getOrCreateTenantByTgId, getDefaultChannel, getContactCta } from "../tenant";
+import {
+  startLearn,
+  addLearnSample,
+  finalizeLearn,
+  isLearning,
+  learnFromLink,
+} from "../style";
+import { getMedia, putMedia } from "../media";
 import { resolveApiKey } from "../ai/keys";
 import { generateContentPlan } from "../ai/anthropic";
 import {
@@ -11,13 +19,13 @@ import {
   setOwnText,
   attachGeneratedImage,
 } from "../generate";
-import { putMedia } from "../media";
 import { publishPost } from "./publish";
 import { parseJsonArray, POST_TYPE_LABEL } from "../posts";
 import {
   postTypeKeyboard,
   previewKeyboard,
   topicKeyboard,
+  settingsKeyboard,
   MARK,
   parseMark,
 } from "./keyboards";
@@ -72,6 +80,36 @@ async function sendPreview(ctx: Context, postId: string) {
     ? `📡 Канал: ${post.channel.title ?? post.channel.username ?? post.channel.chatId}`
     : "⚠️ Канал не подключён — /connect";
   const head = `📝 <b>Черновик</b> · ${POST_TYPE_LABEL[post.type]}\n${channel}\n${"─".repeat(12)}\n\n`;
+
+  // WYSIWYG: якщо є медіа — показуємо ОДНИМ повідомленням фото+підпис (як у канале).
+  if (post.mediaType !== "none" && post.mediaRef) {
+    const m = await getMedia(post.mediaRef);
+    if (m) {
+      let caption = `${post.bodyHtml}${hashtags ? `\n\n${hashtags}` : ""}`;
+      if (caption.length > 1024) caption = caption.slice(0, 1010) + "…";
+      const file = new InputFile(m.data);
+      try {
+        if (post.mediaType === "video") {
+          await ctx.replyWithVideo(file, {
+            caption,
+            parse_mode: "HTML",
+            reply_markup: previewKeyboard(postId),
+          });
+        } else {
+          await ctx.replyWithPhoto(file, {
+            caption,
+            parse_mode: "HTML",
+            reply_markup: previewKeyboard(postId),
+          });
+        }
+        await ctx.reply(`${head}👆 Так пост будет выглядеть в канале.`, { parse_mode: "HTML" });
+        return;
+      } catch {
+        /* фолбек на текстове прев'ю нижче */
+      }
+    }
+  }
+
   const body = `${head}${post.bodyHtml}${hashtags ? `\n\n${hashtags}` : ""}${media}`;
   await ctx.reply(body.slice(0, 4096), {
     parse_mode: "HTML",
@@ -110,6 +148,8 @@ export function registerHandlers(bot: Bot) {
         "Команды:",
         "• /connect — подключить канал",
         "• /channels — мои каналы / отвязать",
+        "• /learn — обучить бота стилю канала",
+        "• /settings — кнопка «написать нам»",
         "• /new — создать пост",
         "• /plan — контент-план на неделю",
         "• /help — помощь",
@@ -151,6 +191,97 @@ export function registerHandlers(bot: Bot) {
       return;
     }
     await ctx.reply("Выбери тип поста:", { reply_markup: postTypeKeyboard() });
+  });
+
+  bot.command("learn", async (ctx) => {
+    const tenant = await tenantFor(ctx);
+    if (!tenant) return;
+    await startLearn(tenant.id);
+    await ctx.reply(
+      "🎓 <b>Режим обучения стилю.</b>\n\n" +
+        "Перешли мне 1–N постов из твоего канала (с текстом и/или картинками) — я изучу tone of voice и визуальную айдентику (цвета, стиль).\n\n" +
+        "Когда закончишь — отправь /done.",
+      { parse_mode: "HTML" },
+    );
+  });
+
+  bot.command("done", async (ctx) => {
+    const tenant = await tenantFor(ctx);
+    if (!tenant) return;
+    if (!(await isLearning(tenant.id))) {
+      await ctx.reply("Сейчас не режим обучения. Запусти /learn.");
+      return;
+    }
+    await ctx.reply("⏳ Анализирую стиль (тексты + изображения)…");
+    const res = await finalizeLearn(tenant.id);
+    if ("error" in res) {
+      await ctx.reply(`❌ ${res.error}`);
+      return;
+    }
+    await ctx.reply(
+      `✅ Стиль изучен.\n\n<b>Tone of voice:</b> ${res.toneSummary || "—"}\n<b>Визуал:</b> ${res.brandSummary || "—"}\n\nТеперь /new будет писать в этом стиле.`,
+      { parse_mode: "HTML" },
+    );
+  });
+
+  bot.command("learnlink", async (ctx) => {
+    const tenant = await tenantFor(ctx);
+    if (!tenant) return;
+    const text = ctx.match?.toString().trim();
+    if (text) {
+      await ctx.reply("⏳ Сканирую публичный канал…");
+      const res = await learnFromLink(tenant.id, text);
+      if ("error" in res) await ctx.reply(`❌ ${res.error}`);
+      else
+        await ctx.reply(
+          `✅ Изучено ${res.texts} постов и ${res.images} картинок.\n<b>Tone of voice:</b> ${res.toneSummary || "—"}`,
+          { parse_mode: "HTML" },
+        );
+      return;
+    }
+    await ctx.reply(
+      `Пришли @username публичного канала в ответ на это сообщение — я просканирую его последние посты. ${MARK.learnLink()}`,
+      { reply_markup: { force_reply: true } },
+    );
+  });
+
+  bot.command("settings", async (ctx) => {
+    const tenant = await tenantFor(ctx);
+    if (!tenant) return;
+    const cta = await getContactCta(tenant.id);
+    await ctx.reply(
+      `⚙️ <b>Настройки</b>\n\nCTA-кнопка «написать нам»: <b>${tenant.ctaEnabled ? "включена" : "выключена"}</b>\nТекст: ${cta.label}\nСсылка: ${cta.url}`,
+      { parse_mode: "HTML", reply_markup: settingsKeyboard(tenant.ctaEnabled) },
+    );
+  });
+
+  bot.callbackQuery("cta:toggle", async (ctx) => {
+    const tenant = await tenantFor(ctx);
+    if (!tenant) return;
+    const updated = await prisma.tenant.update({
+      where: { id: tenant.id },
+      data: { ctaEnabled: !tenant.ctaEnabled },
+    });
+    await ctx.answerCallbackQuery({ text: updated.ctaEnabled ? "Кнопка включена" : "Кнопка выключена" });
+    const cta = await getContactCta(tenant.id);
+    await ctx.editMessageText(
+      `⚙️ <b>Настройки</b>\n\nCTA-кнопка «написать нам»: <b>${updated.ctaEnabled ? "включена" : "выключена"}</b>\nТекст: ${cta.label}\nСсылка: ${cta.url}`,
+      { parse_mode: "HTML", reply_markup: settingsKeyboard(updated.ctaEnabled) },
+    );
+  });
+
+  bot.callbackQuery("cta:settext", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(`Пришли новый текст кнопки в ответ на это сообщение. ${MARK.ctaText()}`, {
+      reply_markup: { force_reply: true },
+    });
+  });
+
+  bot.callbackQuery("cta:seturl", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(`Пришли ссылку для кнопки (t.me/...) в ответ на это сообщение. ${MARK.ctaUrl()}`, {
+      reply_markup: { force_reply: true },
+    });
   });
 
   bot.command("channels", async (ctx) => {
@@ -397,12 +528,63 @@ export function registerHandlers(bot: Bot) {
         await handleUploadedMedia(ctx, mark.arg);
         return;
       }
+      if (mark.kind === "ctatext" && ctx.msg.text) {
+        await prisma.linkSetting.upsert({
+          where: { tenantId_key: { tenantId: tenant.id, key: "contact_us" } },
+          create: { tenantId: tenant.id, key: "contact_us", label: ctx.msg.text.trim(), url: "https://t.me/" },
+          update: { label: ctx.msg.text.trim() },
+        });
+        await ctx.reply("✅ Текст кнопки обновлён.");
+        return;
+      }
+      if (mark.kind === "ctaurl" && ctx.msg.text) {
+        await prisma.linkSetting.upsert({
+          where: { tenantId_key: { tenantId: tenant.id, key: "contact_us" } },
+          create: { tenantId: tenant.id, key: "contact_us", label: "Написать нам", url: ctx.msg.text.trim() },
+          update: { url: ctx.msg.text.trim() },
+        });
+        await ctx.reply("✅ Ссылка кнопки обновлена.");
+        return;
+      }
+      if (mark.kind === "learnlink" && ctx.msg.text) {
+        await ctx.reply("⏳ Сканирую публичный канал…");
+        const res = await learnFromLink(tenant.id, ctx.msg.text.trim());
+        if ("error" in res) await ctx.reply(`❌ ${res.error}`);
+        else
+          await ctx.reply(
+            `✅ Изучено ${res.texts} постов и ${res.images} картинок.\n<b>Tone of voice:</b> ${res.toneSummary || "—"}`,
+            { parse_mode: "HTML" },
+          );
+        return;
+      }
       if (mark.kind === "channel") {
         // нижче обробиться як @username/forward
       }
     }
 
-    // 2) Форвард із каналу → підключити
+    // 2) Режим навчання: будь-який пост (текст/фото, у т.ч. форвард) — це зразок стилю.
+    if (await isLearning(tenant.id)) {
+      const text = ctx.msg.text ?? ctx.msg.caption ?? "";
+      let imageKey: string | undefined;
+      if (ctx.msg.photo?.length) {
+        try {
+          const fileId = ctx.msg.photo[ctx.msg.photo.length - 1].file_id;
+          const file = await ctx.api.getFile(fileId);
+          const url = `https://api.telegram.org/file/bot${env.telegramBotToken}/${file.file_path}`;
+          const buf = Buffer.from(await (await fetch(url)).arrayBuffer());
+          imageKey = await putMedia(buf, "image/jpeg");
+        } catch {}
+      }
+      if (text || imageKey) {
+        const c = await addLearnSample(tenant.id, { text, imageKey });
+        await ctx.reply(`📥 Принято (текстов: ${c.texts}, картинок: ${c.images}). Ещё постов или /done.`);
+      } else {
+        await ctx.reply("Пришли пост с текстом или картинкой, или заверши /done.");
+      }
+      return;
+    }
+
+    // 3) Форвард із каналу → підключити
     const fo = ctx.msg.forward_origin;
     if (fo && fo.type === "channel") {
       await connectChannel(ctx, String(fo.chat.id));

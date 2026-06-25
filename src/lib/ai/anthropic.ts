@@ -64,6 +64,48 @@ export async function analyzeStyle(
   return extractJson<StyleAnalysis>(text);
 }
 
+export type BrandKit = {
+  palette: string[]; // hex-кольори
+  style: string; // візуальний стиль
+  composition: string;
+  hasTextOnImage: boolean;
+  logo: boolean;
+  mood: string;
+  summary: string;
+};
+
+/** Аналіз зображень каналу (Claude Vision) → кольорогама + айдентика. */
+export async function analyzeImages(
+  apiKey: string,
+  images: { b64: string; mime: string }[],
+): Promise<BrandKit> {
+  const imgs = images.slice(0, 5);
+  const content: Anthropic.MessageParam["content"] = [
+    ...imgs.map((im) => ({
+      type: "image" as const,
+      source: {
+        type: "base64" as const,
+        media_type: (im.mime || "image/jpeg") as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+        data: im.b64,
+      },
+    })),
+    {
+      type: "text" as const,
+      text:
+        "Проанализируй визуальную айдентику этих постов Telegram-канала. " +
+        "Ответь СТРОГО валидным JSON без markdown: " +
+        "{palette (массив 3-6 hex-цветов), style, composition, hasTextOnImage (bool), logo (bool), mood, summary}.",
+    },
+  ];
+  const res = await client(apiKey).messages.create({
+    model: MODEL,
+    max_tokens: 1000,
+    messages: [{ role: "user", content }],
+  });
+  const block = res.content.find((b) => b.type === "text");
+  return extractJson<BrandKit>(block && block.type === "text" ? block.text : "{}");
+}
+
 export type FormattedPost = {
   bodyHtml: string;
   hashtags: string[];
@@ -82,23 +124,35 @@ export async function formatPost(
     draftText: string;
     style?: StyleAnalysis | null;
     topic?: string;
-    ctaLabel: string;
-    ctaUrl: string;
+    includeCta: boolean;
+    ctaLabel?: string;
+    ctaUrl?: string;
+    examples?: string[]; // few-shot приклади постів каналу
+    forMedia?: boolean; // якщо пост іде з картинкою — підпис ≤1000 символів
   },
 ): Promise<FormattedPost> {
   const defaultTags = POST_TYPE_HASHTAGS[opts.type].join(" ");
+  const ctaRule = opts.includeCta
+    ? `Внизу поста добавь короткий призыв к действию с гиперссылкой «${opts.ctaLabel}» на CTA-URL (тег <a href="CTA_URL">…</a>).`
+    : "НЕ добавляй никаких призывов к действию и ссылок «написать нам» — кнопка выключена.";
+  const lenRule = opts.forMedia
+    ? "Пост идёт ОДНИМ сообщением с картинкой — держи длину bodyHtml ≤ 1000 символов."
+    : "Держи длину bodyHtml ≤ 3500 символов.";
   const system =
-    "Ты — редактор Telegram-канала. Оформи пост в стиле канала. " +
+    "Ты — редактор Telegram-канала. Оформи пост ТОЧНО в стиле канала (тон, длина, эмодзи, структура). " +
     "Используй ТОЛЬКО Telegram-HTML теги: <b> <i> <u> <s> <a href> <code> <pre> <blockquote>. " +
     "НЕ используй markdown, <br>, <p>, <div>, заголовки. Переносы строк — обычные \\n. " +
-    "Внизу поста добавь блок призыва к действию с гиперссылкой «написать нам» на CTA-URL " +
-    "(тег <a href=\"CTA_URL\">…</a>). Подбери уместные хештеги (включи дефолтные для типа). " +
+    `${ctaRule} ${lenRule} ` +
+    "Подбери уместные хештеги (включи дефолтные для типа). " +
     "Ответь СТРОГО валидным JSON без markdown: {bodyHtml, hashtags (массив строк с #), buttonLabel}.";
   const user = [
     `Тип поста: ${opts.type} (дефолтные хештеги: ${defaultTags})`,
     opts.topic ? `Тема: ${opts.topic}` : "",
     opts.style ? `Стиль канала (JSON): ${JSON.stringify(opts.style)}` : "",
-    `CTA: текст кнопки = "${opts.ctaLabel}", CTA_URL = ${opts.ctaUrl}`,
+    opts.examples?.length
+      ? `Примеры постов канала (повтори их tone of voice):\n\n${opts.examples.slice(0, 3).join("\n\n---\n\n")}`
+      : "",
+    opts.includeCta ? `CTA: текст кнопки = "${opts.ctaLabel}", CTA_URL = ${opts.ctaUrl}` : "",
     `Черновик текста:\n${opts.draftText}`,
   ]
     .filter(Boolean)
@@ -110,7 +164,7 @@ export async function formatPost(
   return {
     bodyHtml: parsed.bodyHtml ?? opts.draftText,
     hashtags: [...tags],
-    buttonLabel: parsed.buttonLabel || opts.ctaLabel,
+    buttonLabel: parsed.buttonLabel || opts.ctaLabel || "Написать нам",
   };
 }
 

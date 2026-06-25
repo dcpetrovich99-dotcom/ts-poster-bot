@@ -26,8 +26,15 @@ model Tenant {
   activationToken String?  @unique
   activationIp    String?
   activationUa    String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+
+  // CTA-кнопка «написать нам» — опційна, керується з бота (/settings).
+  ctaEnabled Boolean @default(false)
+  // Тимчасовий режим бота для багатокрокових дій без сесій ("learn" тощо).
+  pendingMode   String?
+  pendingModeAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   adminUsers   AdminUser[]
   credentials  ApiCredential[]
@@ -170,6 +177,8 @@ model StyleProfile {
 
   // Структурований аналіз (JSON-рядок): тон, емодзі, довжина, CTA, рубрики.
   analysisJson String?
+  // Візуальна айдентика (JSON): палітра hex, стиль, композиція, mood (Claude Vision).
+  brandKitJson String?
   // Тематика/ніша каналу (вільний текст від власника).
   topic        String?
   // Сирі референс-пости (для порожнього каналу або як приклади few-shot).

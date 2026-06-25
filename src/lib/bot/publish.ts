@@ -3,7 +3,6 @@ import { InputFile } from "grammy";
 import { getBot } from "./instance";
 import { prisma } from "../db";
 import { getMedia } from "../media";
-import { getContactCta } from "../tenant";
 import { parseJsonArray } from "../posts";
 import type { InlineButton } from "../telegram";
 
@@ -24,14 +23,11 @@ export async function publishPost(postId: string): Promise<{ ok: true; messageId
   if (!post) return { ok: false, error: "Пост не знайдено" };
   if (!post.channel) return { ok: false, error: "До поста не привʼязано канал" };
 
-  const cta = await getContactCta(post.tenantId);
-  const buttons = parseJsonArray<InlineButton>(post.buttonsJson);
-  const ctaButtons: InlineButton[] = buttons.length ? buttons : [cta];
-  const keyboard = {
-    inline_keyboard: ctaButtons
-      .filter((b) => b.label && b.url)
-      .map((b) => [{ text: b.label, url: b.url }]),
-  };
+  // Кнопка додається ТІЛЬКИ якщо CTA увімкнена (buttonsJson заповнений при генерації).
+  const buttons = parseJsonArray<InlineButton>(post.buttonsJson).filter((b) => b.label && b.url);
+  const keyboard = buttons.length
+    ? { inline_keyboard: buttons.map((b) => [{ text: b.label, url: b.url }]) }
+    : undefined;
 
   const hashtags = parseJsonArray<string>(post.hashtagsJson);
   const text = buildText(post.bodyHtml, hashtags);

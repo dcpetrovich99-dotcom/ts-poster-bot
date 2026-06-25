@@ -17,16 +17,27 @@ function client(apiKey: string) {
 /** Генерує чернетку тексту поста в стилі каналу (без HTML-оформлення). */
 export async function generateDraftText(
   apiKey: string,
-  opts: { type: PostType; topic: string; style?: StyleAnalysis | null; extra?: string },
+  opts: {
+    type: PostType;
+    topic: string;
+    style?: StyleAnalysis | null;
+    extra?: string;
+    examples?: string[];
+  },
 ): Promise<string> {
   const system =
     "Ты — копирайтер Telegram-канала рекламного агентства (трафик/реклама). " +
-    "Пиши живой, полезный пост в стиле канала. Без хэштегов и без HTML — только текст. " +
-    "Длину и тон подстрой под стиль канала.";
+    "Пиши живой, полезный пост ТОЧНО в стиле канала (тон, длина, эмодзи, структура из примеров). " +
+    "Без хэштегов и без HTML — только текст.";
   const user = [
     `Тип поста: ${POST_TYPE_LABEL[opts.type]}`,
     `Тема: ${opts.topic}`,
     opts.style ? `Стиль канала (JSON): ${JSON.stringify(opts.style)}` : "",
+    opts.examples?.length
+      ? `Примеры постов канала (повтори их tone of voice, длину и структуру):\n\n${opts.examples
+          .slice(0, 3)
+          .join("\n\n---\n\n")}`
+      : "",
     opts.extra ? `Дополнительно от автора: ${opts.extra}` : "",
   ]
     .filter(Boolean)

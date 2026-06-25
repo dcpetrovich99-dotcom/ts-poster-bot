@@ -9,7 +9,19 @@ export const MARK = {
   media: (postId: string) => `[#media:${postId}]`,
   channel: () => `[#channel]`,
   styleSamples: () => `[#style]`,
+  ctaText: () => `[#ctatext]`,
+  ctaUrl: () => `[#ctaurl]`,
+  learnLink: () => `[#learnlink]`,
 };
+
+/** Клавіатура налаштувань: CTA-кнопка (вкл/викл, текст, посилання). */
+export function settingsKeyboard(ctaEnabled: boolean): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(ctaEnabled ? "🔘 Кнопка: ВКЛ" : "⚪ Кнопка: ВЫКЛ", "cta:toggle")
+    .row()
+    .text("✏️ Текст кнопки", "cta:settext")
+    .text("🔗 Ссылка кнопки", "cta:seturl");
+}
 
 export function parseMark(text?: string | null): { kind: string; arg?: string } | null {
   if (!text) return null;
