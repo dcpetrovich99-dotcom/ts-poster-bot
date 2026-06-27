@@ -285,6 +285,17 @@ model ContentPlanItem {
 
 // ── Редаговані посилання (CTA «написать нам», менеджер тощо) ────────
 
+// Медіа (згенеровані/завантажені картинки та відео) — у БД (персистентно на
+// будь-якому хості, без ефемерного диска / зовнішнього сховища).
+model MediaBlob {
+  id        String   @id @default(cuid())
+  mime      String
+  data      Bytes
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
 model LinkSetting {
   id       String   @id @default(cuid())
   tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
