@@ -1,5 +1,5 @@
 import "server-only";
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 import type { StyleAnalysis } from "./anthropic";
 import type { PostType } from "@/generated/prisma/client";
 import { POST_TYPE_LABEL } from "../posts";
@@ -23,12 +23,14 @@ export async function generateDraftText(
     style?: StyleAnalysis | null;
     extra?: string;
     examples?: string[];
+    emojiPack?: string[];
   },
 ): Promise<string> {
   const system =
     "Ты — копирайтер Telegram-канала рекламного агентства (трафик/реклама). " +
     "Пиши живой, полезный пост ТОЧНО в стиле канала (тон, длина, эмодзи, структура из примеров). " +
-    "Без хэштегов и без HTML — только текст.";
+    "Без хэштегов и без HTML — только текст." +
+    (opts.emojiPack?.length ? ` Используй эмодзи канала: ${opts.emojiPack.join(" ")}.` : "");
   const user = [
     `Тип поста: ${POST_TYPE_LABEL[opts.type]}`,
     `Тема: ${opts.topic}`,
@@ -54,18 +56,38 @@ export async function generateDraftText(
   return res.choices[0]?.message?.content?.trim() ?? "";
 }
 
-/** Генерує зображення під пост. Повертає base64 PNG (data без префікса). */
+/**
+ * Генерує зображення під пост. Якщо переданий референс-банер — використовує
+ * images.edit (GPT бере його за еталон стилю), інакше images.generate.
+ * Повертає base64 PNG.
+ */
 export async function generateImage(
   apiKey: string,
   prompt: string,
+  reference?: { data: Buffer; mime: string },
 ): Promise<{ b64: string; mime: string }> {
-  const res = await client(apiKey).images.generate({
-    model: IMAGE_MODEL,
-    prompt,
-    size: "1024x1024",
-    n: 1,
-  });
-  const b64 = res.data?.[0]?.b64_json;
+  const c = client(apiKey);
+  let b64: string | undefined;
+
+  if (reference) {
+    const file = await toFile(reference.data, "reference.png", { type: reference.mime || "image/png" });
+    const res = await c.images.edit({
+      model: IMAGE_MODEL,
+      image: file,
+      prompt,
+      size: "1024x1024",
+    });
+    b64 = res.data?.[0]?.b64_json;
+  } else {
+    const res = await c.images.generate({
+      model: IMAGE_MODEL,
+      prompt,
+      size: "1024x1024",
+      n: 1,
+    });
+    b64 = res.data?.[0]?.b64_json;
+  }
+
   if (!b64) throw new Error("gpt-image-1 не вернул изображение");
   return { b64, mime: "image/png" };
 }

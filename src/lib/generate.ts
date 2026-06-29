@@ -4,7 +4,8 @@ import { resolveApiKey, chargeCredits } from "./ai/keys";
 import { generateDraftText, generateImage } from "./ai/openai";
 import { formatPost, type StyleAnalysis, type BrandKit } from "./ai/anthropic";
 import { getContactCta, getDefaultChannel } from "./tenant";
-import { putMedia } from "./media";
+import { getHashtagPreset } from "./hashtags";
+import { putMedia, getMedia } from "./media";
 import { parseJsonArray } from "./posts";
 import type { PostType } from "@/generated/prisma/client";
 
@@ -12,6 +13,10 @@ type StyleBundle = {
   analysis: StyleAnalysis | null;
   brandKit: BrandKit | null;
   examples: string[];
+  bannerTov: string | null;
+  refBannerKey: string | null;
+  emojiPack: string[];
+  premiumEmoji: { emoji: string; id: string }[];
 };
 
 async function loadStyle(tenantId: string): Promise<StyleBundle> {
@@ -24,19 +29,28 @@ async function loadStyle(tenantId: string): Promise<StyleBundle> {
   try {
     brandKit = sp?.brandKitJson ? (JSON.parse(sp.brandKitJson) as BrandKit) : null;
   } catch {}
-  const examples = parseJsonArray<string>(sp?.referencesJson);
-  return { analysis, brandKit, examples };
+  return {
+    analysis,
+    brandKit,
+    examples: parseJsonArray<string>(sp?.referencesJson),
+    bannerTov: sp?.bannerTov ?? null,
+    refBannerKey: sp?.refBannerKey ?? null,
+    emojiPack: parseJsonArray<string>(sp?.emojiPackJson),
+    premiumEmoji: parseJsonArray<{ emoji: string; id: string }>(sp?.premiumEmojiJson),
+  };
 }
 
-/** Промпт для зображення під айдентику каналу (палітра + стиль із brandKit). */
-function imagePrompt(topic: string, brand: BrandKit | null): string {
+/** Промпт зображення: brandKit (палітра/стиль) + детальний bannerTov як еталон. */
+function imagePrompt(topic: string, brand: BrandKit | null, bannerTov: string | null): string {
   const base = `Иллюстрация для Telegram-поста. Тема: ${topic}.`;
-  if (!brand) return `${base} Современный, чистый стиль, без текста на картинке.`;
-  const palette = brand.palette?.length ? `Палитра бренда: ${brand.palette.join(", ")}.` : "";
-  const style = brand.style ? `Визуальный стиль: ${brand.style}.` : "";
-  const mood = brand.mood ? `Настроение: ${brand.mood}.` : "";
-  const text = brand.hasTextOnImage ? "" : "Без текста на изображении.";
-  return `${base} ${palette} ${style} ${mood} ${text} Держи единую айдентику канала.`.trim();
+  const parts = [base];
+  if (bannerTov) parts.push(`Эталонный стиль баннера: ${bannerTov}`);
+  if (brand?.palette?.length) parts.push(`Палитра: ${brand.palette.join(", ")}.`);
+  if (brand?.style) parts.push(`Стиль: ${brand.style}.`);
+  if (brand?.mood) parts.push(`Настроение: ${brand.mood}.`);
+  if (brand && !brand.hasTextOnImage) parts.push("Без текста на изображении.");
+  parts.push("Держи единую айдентику канала.");
+  return parts.join(" ");
 }
 
 /**
@@ -69,6 +83,7 @@ export async function createDraft(opts: {
       topic,
       style: style.analysis,
       examples: style.examples,
+      emojiPack: style.emojiPack,
       extra: opts.extra,
     });
     await chargeCredits(tenantId, 1, "post_text", { type });
@@ -76,6 +91,7 @@ export async function createDraft(opts: {
 
   const cta = await getContactCta(tenantId);
   const includeCta = !!tenant?.ctaEnabled;
+  const defaultTags = await getHashtagPreset(tenantId, type);
   const formatted = await formatPost(anthropicKey, {
     type,
     draftText,
@@ -86,6 +102,9 @@ export async function createDraft(opts: {
     ctaLabel: cta.label,
     ctaUrl: cta.url,
     forMedia: true,
+    defaultTags,
+    emojiPack: style.emojiPack,
+    premiumEmoji: style.premiumEmoji,
   });
   await chargeCredits(tenantId, 1, "post_format", { type });
 
@@ -127,10 +146,12 @@ export async function regenerateDraft(
     topic: post.topic ?? "",
     style: style.analysis,
     examples: style.examples,
+    emojiPack: style.emojiPack,
   });
   await chargeCredits(post.tenantId, 1, "post_text");
   const cta = await getContactCta(post.tenantId);
   const includeCta = !!tenant?.ctaEnabled;
+  const defaultTags = await getHashtagPreset(post.tenantId, post.type);
   const formatted = await formatPost(anthropicKey, {
     type: post.type,
     draftText,
@@ -141,6 +162,9 @@ export async function regenerateDraft(
     ctaLabel: cta.label,
     ctaUrl: cta.url,
     forMedia: true,
+    defaultTags,
+    emojiPack: style.emojiPack,
+    premiumEmoji: style.premiumEmoji,
   });
   await chargeCredits(post.tenantId, 1, "post_format");
   await prisma.post.update({
@@ -170,6 +194,7 @@ export async function setOwnText(
   const style = await loadStyle(post.tenantId);
   const cta = await getContactCta(post.tenantId);
   const includeCta = !!tenant?.ctaEnabled;
+  const defaultTags = await getHashtagPreset(post.tenantId, post.type);
   const formatted = await formatPost(anthropicKey, {
     type: post.type,
     draftText: ownText,
@@ -180,6 +205,9 @@ export async function setOwnText(
     ctaLabel: cta.label,
     ctaUrl: cta.url,
     forMedia: true,
+    defaultTags,
+    emojiPack: style.emojiPack,
+    premiumEmoji: style.premiumEmoji,
   });
   await chargeCredits(post.tenantId, 1, "post_format");
   await prisma.post.update({
@@ -206,9 +234,15 @@ export async function attachGeneratedImage(
   if (!openaiKey) return { error: "Немає OpenAI API-ключа" };
 
   const style = await loadStyle(post.tenantId);
-  const prompt = imagePrompt(post.topic ?? "", style.brandKit);
+  const prompt = imagePrompt(post.topic ?? "", style.brandKit, style.bannerTov);
+  // Якщо є збережений референс-банер — GPT бере його за еталон (images.edit).
+  let reference: { data: Buffer; mime: string } | undefined;
+  if (style.refBannerKey) {
+    const m = await getMedia(style.refBannerKey);
+    if (m) reference = m;
+  }
   try {
-    const img = await generateImage(openaiKey, prompt);
+    const img = await generateImage(openaiKey, prompt, reference);
     const key = await putMedia(Buffer.from(img.b64, "base64"), img.mime);
     await chargeCredits(post.tenantId, 3, "post_image");
     await prisma.post.update({

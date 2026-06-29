@@ -3,7 +3,7 @@ import { prisma } from "./db";
 import { getMedia, putMedia } from "./media";
 import { parseJsonArray } from "./posts";
 import { resolveApiKey } from "./ai/keys";
-import { analyzeStyle, analyzeImages } from "./ai/anthropic";
+import { analyzeStyle, analyzeImages, analyzeBanner } from "./ai/anthropic";
 
 // Навчання стилю каналу: накопичення зразків (текст+фото), аналіз tone of voice
 // (Claude) + візуальної айдентики/палітри (Claude Vision).
@@ -104,6 +104,64 @@ export async function finalizeLearn(
   await prisma.styleProfile.update({ where: { tenantId }, data });
   await prisma.tenant.update({ where: { id: tenantId }, data: { pendingMode: null, pendingModeAt: null } });
   return { ok: true, toneSummary, brandSummary };
+}
+
+// ─── окремий tone of voice банера (еталонне зображення) ─────────────
+
+/** Зберігає референс-банер: Claude Vision робить детальний bannerTov, який далі
+ *  завжди використовується як еталон для генерації картинок. */
+export async function learnBanner(
+  tenantId: string,
+  imageKey: string,
+): Promise<{ ok: true; bannerTov: string } | { error: string }> {
+  const key = await resolveApiKey(tenantId, "anthropic");
+  if (!key) return { error: "Немає Anthropic API-ключа" };
+  const m = await getMedia(imageKey);
+  if (!m) return { error: "Изображение не найдено" };
+  await ensureProfile(tenantId);
+  const { bannerTov, brand } = await analyzeBanner(key, {
+    b64: m.data.toString("base64"),
+    mime: m.mime,
+  });
+  await prisma.styleProfile.update({
+    where: { tenantId },
+    data: { bannerTov, refBannerKey: imageKey, brandKitJson: JSON.stringify(brand) },
+  });
+  return { ok: true, bannerTov };
+}
+
+// ─── пак емодзі ─────────────────────────────────────────────────────
+
+export async function setEmojiPack(tenantId: string, raw: string): Promise<string[]> {
+  await ensureProfile(tenantId);
+  // витягуємо емодзі-символи (грубо: усе, що не пробіл/кома)
+  const emojis = raw
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  await prisma.styleProfile.update({
+    where: { tenantId },
+    data: { emojiPackJson: JSON.stringify(emojis) },
+  });
+  return emojis;
+}
+
+/** Преміум/кастомні емодзі: рядок "👍=5368324170671202286, 🔥=5368..." */
+export async function setPremiumEmoji(
+  tenantId: string,
+  raw: string,
+): Promise<{ emoji: string; id: string }[]> {
+  await ensureProfile(tenantId);
+  const pairs: { emoji: string; id: string }[] = [];
+  for (const part of raw.split(/[\n,]+/)) {
+    const [emoji, id] = part.split("=").map((s) => s.trim());
+    if (emoji && id) pairs.push({ emoji, id });
+  }
+  await prisma.styleProfile.update({
+    where: { tenantId },
+    data: { premiumEmojiJson: JSON.stringify(pairs) },
+  });
+  return pairs;
 }
 
 // ─── скрейп публічного каналу через t.me/s/<username> ───────────────

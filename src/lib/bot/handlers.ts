@@ -9,7 +9,15 @@ import {
   finalizeLearn,
   isLearning,
   learnFromLink,
+  learnBanner,
+  setEmojiPack,
+  setPremiumEmoji,
 } from "../style";
+import {
+  getHashtagPreset,
+  setHashtagPreset,
+  normalizeTags,
+} from "../hashtags";
 import { getMedia, putMedia } from "../media";
 import { resolveApiKey } from "../ai/keys";
 import { generateContentPlan } from "../ai/anthropic";
@@ -20,7 +28,7 @@ import {
   attachGeneratedImage,
 } from "../generate";
 import { publishPost } from "./publish";
-import { parseJsonArray, POST_TYPE_LABEL } from "../posts";
+import { parseJsonArray, POST_TYPE_LABEL, POST_TYPES } from "../posts";
 import {
   postTypeKeyboard,
   previewKeyboard,
@@ -148,7 +156,10 @@ export function registerHandlers(bot: Bot) {
         "Команды:",
         "• /connect — подключить канал",
         "• /channels — мои каналы / отвязать",
-        "• /learn — обучить бота стилю канала",
+        "• /learn — обучить бота стилю (тексты)",
+        "• /banner — эталон стиля картинок",
+        "• /hashtags — хештеги по типам",
+        "• /emoji — набор эмодзи канала",
         "• /settings — кнопка «написать нам»",
         "• /new — создать пост",
         "• /plan — контент-план на неделю",
@@ -219,7 +230,8 @@ export function registerHandlers(bot: Bot) {
       return;
     }
     await ctx.reply(
-      `✅ Стиль изучен.\n\n<b>Tone of voice:</b> ${res.toneSummary || "—"}\n<b>Визуал:</b> ${res.brandSummary || "—"}\n\nТеперь /new будет писать в этом стиле.`,
+      `✅ Стиль текста изучен.\n\n<b>Tone of voice:</b> ${res.toneSummary || "—"}\n<b>Визуал:</b> ${res.brandSummary || "—"}\n\n` +
+        "Дальше — отдельно настрой <b>tone of voice баннера</b>: команда /banner (пришли эталонную картинку, я запомню её стиль для всех будущих изображений).\n\nПотом /new — пишет в этом стиле.",
       { parse_mode: "HTML" },
     );
   });
@@ -282,6 +294,78 @@ export function registerHandlers(bot: Bot) {
     await ctx.reply(`Пришли ссылку для кнопки (t.me/...) в ответ на это сообщение. ${MARK.ctaUrl()}`, {
       reply_markup: { force_reply: true },
     });
+  });
+
+  bot.command("banner", async (ctx) => {
+    const tenant = await tenantFor(ctx);
+    if (!tenant) return;
+    await ctx.reply(
+      `🖼 Пришли эталонный баннер (картинку) в ответ на это сообщение. Я подробно опишу его tone of voice и буду ВСЕГДА использовать как референс для будущих изображений. ${MARK.banner()}`,
+      { reply_markup: { force_reply: true } },
+    );
+  });
+
+  bot.command("hashtags", async (ctx) => {
+    const tenant = await tenantFor(ctx);
+    if (!tenant) return;
+    const lines: string[] = [];
+    const kb = new InlineKeyboard();
+    POST_TYPES.forEach((t, i) => {
+      kb.text(POST_TYPE_LABEL[t], `htedit:${t}`);
+      if (i % 2 === 1) kb.row();
+    });
+    for (const t of POST_TYPES) {
+      const tags = await getHashtagPreset(tenant.id, t);
+      lines.push(`<b>${POST_TYPE_LABEL[t]}</b>: ${tags.join(" ")}`);
+    }
+    await ctx.reply(`🏷 <b>Хештеги по типам</b>\n\n${lines.join("\n")}\n\nНажми тип, чтобы изменить.`, {
+      parse_mode: "HTML",
+      reply_markup: kb,
+    });
+  });
+
+  bot.callbackQuery(/^htedit:(.+)$/, async (ctx) => {
+    const type = ctx.match![1];
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      `Пришли хештеги для «${POST_TYPE_LABEL[type as never] ?? type}» через пробел (например: #кейс #трафик). ${MARK.htag(type)}`,
+      { reply_markup: { force_reply: true } },
+    );
+  });
+
+  bot.command("emoji", async (ctx) => {
+    const tenant = await tenantFor(ctx);
+    if (!tenant) return;
+    const sp = await prisma.styleProfile.findUnique({ where: { tenantId: tenant.id } });
+    const pack = parseJsonArray<string>(sp?.emojiPackJson).join(" ") || "—";
+    const prem =
+      parseJsonArray<{ emoji: string; id: string }>(sp?.premiumEmojiJson)
+        .map((e) => e.emoji)
+        .join(" ") || "—";
+    const kb = new InlineKeyboard()
+      .text("😀 Обычные эмодзи", "emoji:set")
+      .row()
+      .text("⭐ Премиум-эмодзи", "emoji:setprem");
+    await ctx.reply(
+      `😀 <b>Эмодзи канала</b>\nОбычные: ${pack}\nПремиум: ${prem}\n\n` +
+        "⚠️ Премиум/кастомные эмодзи в постах <b>канала</b> работают, только если у бота есть купленный на Fragment username. Иначе Telegram покажет обычный эмодзи-фолбек.",
+      { parse_mode: "HTML", reply_markup: kb },
+    );
+  });
+
+  bot.callbackQuery("emoji:set", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(`Пришли набор обычных эмодзи через пробел (например: 🔥 🚀 💸 ✅). ${MARK.emoji()}`, {
+      reply_markup: { force_reply: true },
+    });
+  });
+
+  bot.callbackQuery("emoji:setprem", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      `Пришли премиум-эмодзи в формате «эмодзи=custom_emoji_id», по одному в строке.\nНапример:\n🔥=5368324170671202286\n💎=5366316836101038579 ${MARK.pemoji()}`,
+      { reply_markup: { force_reply: true } },
+    );
   });
 
   bot.command("channels", async (ctx) => {
@@ -482,6 +566,19 @@ export function registerHandlers(bot: Bot) {
     await ctx.reply("🗑 Черновик удалён.");
   });
 
+  bot.callbackQuery(/^phash:(.+)$/, async (ctx) => {
+    const postId = ctx.match![1];
+    await ctx.answerCallbackQuery();
+    if (!(await ownedPost(ctx, postId))) {
+      await ctx.reply("⚠️ Нет доступа к этому посту.");
+      return;
+    }
+    await ctx.reply(
+      `Пришли хештеги для этого поста через пробел (заменят текущие). ${MARK.phash(postId)}`,
+      { reply_markup: { force_reply: true } },
+    );
+  });
+
   // ── список каналов + отвязка ──
   bot.callbackQuery(/^chdetach:(.+)$/, async (ctx) => {
     const channelId = ctx.match![1];
@@ -555,6 +652,57 @@ export function registerHandlers(bot: Bot) {
             `✅ Изучено ${res.texts} постов и ${res.images} картинок.\n<b>Tone of voice:</b> ${res.toneSummary || "—"}`,
             { parse_mode: "HTML" },
           );
+        return;
+      }
+      if (mark.kind === "banner") {
+        if (!ctx.msg.photo?.length) {
+          await ctx.reply("⚠️ Пришли именно картинку (баннер).");
+          return;
+        }
+        await ctx.reply("⏳ Анализирую баннер…");
+        try {
+          const fileId = ctx.msg.photo[ctx.msg.photo.length - 1].file_id;
+          const file = await ctx.api.getFile(fileId);
+          const url = `https://api.telegram.org/file/bot${env.telegramBotToken}/${file.file_path}`;
+          const buf = Buffer.from(await (await fetch(url)).arrayBuffer());
+          const key = await putMedia(buf, "image/jpeg");
+          const res = await learnBanner(tenant.id, key);
+          if ("error" in res) await ctx.reply(`❌ ${res.error}`);
+          else
+            await ctx.reply(
+              `✅ Баннер сохранён как эталон.\n<b>Tone of voice баннера:</b> ${res.bannerTov.slice(0, 600)}`,
+              { parse_mode: "HTML" },
+            );
+        } catch (e) {
+          await ctx.reply(`❌ ${e instanceof Error ? e.message : e}`);
+        }
+        return;
+      }
+      if (mark.kind === "htag" && mark.arg && ctx.msg.text) {
+        await setHashtagPreset(tenant.id, mark.arg as never, normalizeTags(ctx.msg.text));
+        await ctx.reply("✅ Хештеги для типа обновлены.");
+        return;
+      }
+      if (mark.kind === "emoji" && ctx.msg.text) {
+        const e = await setEmojiPack(tenant.id, ctx.msg.text);
+        await ctx.reply(`✅ Набор эмодзи сохранён: ${e.join(" ")}`);
+        return;
+      }
+      if (mark.kind === "pemoji" && ctx.msg.text) {
+        const p = await setPremiumEmoji(tenant.id, ctx.msg.text);
+        await ctx.reply(`✅ Премиум-эмодзи сохранены: ${p.map((x) => x.emoji).join(" ") || "—"}`);
+        return;
+      }
+      if (mark.kind === "phash" && mark.arg && ctx.msg.text) {
+        if (!(await ownedPost(ctx, mark.arg))) {
+          await ctx.reply("⚠️ Нет доступа к этому посту.");
+          return;
+        }
+        await prisma.post.update({
+          where: { id: mark.arg },
+          data: { hashtagsJson: JSON.stringify(normalizeTags(ctx.msg.text)) },
+        });
+        await sendPreview(ctx, mark.arg);
         return;
       }
       if (mark.kind === "channel") {

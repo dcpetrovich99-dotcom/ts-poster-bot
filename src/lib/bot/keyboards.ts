@@ -12,6 +12,11 @@ export const MARK = {
   ctaText: () => `[#ctatext]`,
   ctaUrl: () => `[#ctaurl]`,
   learnLink: () => `[#learnlink]`,
+  banner: () => `[#banner]`,
+  htag: (type: string) => `[#htag:${type}]`,
+  emoji: () => `[#emoji]`,
+  pemoji: () => `[#pemoji]`,
+  phash: (postId: string) => `[#phash:${postId}]`,
 };
 
 /** Клавіатура налаштувань: CTA-кнопка (вкл/викл, текст, посилання). */
@@ -40,7 +45,7 @@ export function postTypeKeyboard(): InlineKeyboard {
   return kb;
 }
 
-/** Клавіатура під чернеткою (апрув + медіа + регенерація). */
+/** Клавіатура під чернеткою (апрув + медіа + регенерація + хештеги). */
 export function previewKeyboard(postId: string): InlineKeyboard {
   return new InlineKeyboard()
     .text("✅ Опубликовать", `pub:${postId}`)
@@ -48,9 +53,10 @@ export function previewKeyboard(postId: string): InlineKeyboard {
     .text("🖼 Сгенерировать картинку", `gimg:${postId}`)
     .text("📎 Своё медиа", `umd:${postId}`)
     .row()
+    .text("🏷 Хештеги", `phash:${postId}`)
     .text("🔄 Другой вариант", `regen:${postId}`)
-    .text("✏️ Свой текст", `own:${postId}`)
     .row()
+    .text("✏️ Свой текст", `own:${postId}`)
     .text("🗑 Удалить", `del:${postId}`);
 }
 

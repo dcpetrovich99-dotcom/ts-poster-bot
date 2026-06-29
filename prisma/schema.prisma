@@ -42,9 +42,10 @@ model Tenant {
   userSessions TgUserSession[]
   styleProfile StyleProfile?
   posts        Post[]
-  planItems    ContentPlanItem[]
-  linkSettings LinkSetting[]
-  ledger       BalanceEntry[]
+  planItems      ContentPlanItem[]
+  linkSettings   LinkSetting[]
+  ledger         BalanceEntry[]
+  hashtagPresets HashtagPreset[]
 
   @@index([ownerTgId])
 }
@@ -179,6 +180,13 @@ model StyleProfile {
   analysisJson String?
   // Візуальна айдентика (JSON): палітра hex, стиль, композиція, mood (Claude Vision).
   brandKitJson String?
+  // Окремий детальний tone of voice банера/зображень (текст) + референс-банер
+  // (ключ MediaBlob), який GPT використовує як еталон для майбутніх картинок.
+  bannerTov    String?
+  refBannerKey String?
+  // Пак емодзі: звичайні (масив) + опц. кастомні/преміум {emoji, id} (tg-emoji).
+  emojiPackJson    String?
+  premiumEmojiJson String?
   // Тематика/ніша каналу (вільний текст від власника).
   topic        String?
   // Сирі референс-пости (для порожнього каналу або як приклади few-shot).
@@ -284,6 +292,18 @@ model ContentPlanItem {
 }
 
 // ── Редаговані посилання (CTA «написать нам», менеджер тощо) ────────
+
+// Дефолтні хештеги під кожну тематику поста — редаговані власником.
+model HashtagPreset {
+  id       String   @id @default(cuid())
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId String
+  type     PostType
+  tagsJson String // JSON-масив хештегів
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, type])
+}
 
 // Медіа (згенеровані/завантажені картинки та відео) — у БД (персистентно на
 // будь-якому хості, без ефемерного диска / зовнішнього сховища).
